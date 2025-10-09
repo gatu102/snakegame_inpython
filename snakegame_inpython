@@ -1,187 +1,152 @@
 import curses
 import random
 import os
-from datetime import datetime
 
 HIGH_SCORE_FILE = "snake_highscore.txt"
 
-# ---------------- High Score Functions ---------------- #
+# ----------------- Utility Functions -----------------
 def load_high_score():
-    """Load the high score from a file."""
-    if os.path.exists(HIGH_SCORE_FILE):
-        with open(HIGH_SCORE_FILE, "r") as f:
-            try:
-                return int(f.read())
-            except:
-                return 0
-    return 0
+    try:
+        with open(HIGH_SCORE_FILE) as f:
+            return int(f.read())
+    except:
+        return 0
 
 def save_high_score(score):
-    """Save the high score to a file."""
     with open(HIGH_SCORE_FILE, "w") as f:
         f.write(str(score))
 
-# ---------------- Game Setup ---------------- #
+def random_pos(height, width, occupied):
+    """Generate random coordinates avoiding occupied spaces."""
+    while True:
+        pos = [random.randint(1, height - 2), random.randint(1, width - 2)]
+        if all(pos not in group for group in occupied):
+            return pos
+
+# ----------------- Main Game -----------------
 def snake_game():
     screen = curses.initscr()
     curses.curs_set(0)
     curses.start_color()
-    curses.init_pair(1, curses.COLOR_GREEN, curses.COLOR_BLACK)   # Player Snake
-    curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)   # Normal Food
-    curses.init_pair(3, curses.COLOR_YELLOW, curses.COLOR_BLACK)  # Bonus Food
-    curses.init_pair(4, curses.COLOR_RED, curses.COLOR_BLACK)     # Poison
-    curses.init_pair(5, curses.COLOR_CYAN, curses.COLOR_BLACK)    # Score
-    curses.init_pair(6, curses.COLOR_MAGENTA, curses.COLOR_BLACK) # Obstacles
-    curses.init_pair(7, curses.COLOR_BLUE, curses.COLOR_BLACK)    # AI Snakes
-    curses.init_pair(8, curses.COLOR_WHITE, curses.COLOR_BLACK)   # Power-ups
+
+    colors = {
+        "snake": (1, curses.COLOR_GREEN),
+        "food": (2, curses.COLOR_GREEN),
+        "bonus": (3, curses.COLOR_YELLOW),
+        "poison": (4, curses.COLOR_RED),
+        "score": (5, curses.COLOR_CYAN),
+        "obstacle": (6, curses.COLOR_MAGENTA),
+        "ai": (7, curses.COLOR_BLUE),
+        "power": (8, curses.COLOR_WHITE),
+    }
+
+    for i, (_, col) in enumerate(colors.values(), 1):
+        curses.init_pair(i, col, curses.COLOR_BLACK)
 
     height, width = 20, 60
     win = curses.newwin(height, width, 0, 0)
-    win.keypad(1)
+    win.keypad(True)
     win.timeout(150)
 
-    # Initialize player and AI snakes
+    # Initialize entities
     snake = [[10, 30], [10, 29], [10, 28]]
-    ai_snakes = [
-        [[5, 5], [5, 4], [5, 3]],
-        [[15, 50], [15, 51], [15, 52]]
-    ]
-    
-    # Initialize game state
-    score = 0
+    ai_snakes = [[[5, 5], [5, 4], [5, 3]], [[15, 50], [15, 51], [15, 52]]]
+    score, level = 0, 1
     high_score = load_high_score()
-    level = 1
-    key = curses.KEY_RIGHT
-    paused = False
-    power_up = False
-    power_timer = 0
+    key, paused = curses.KEY_RIGHT, False
+    power_up, power_timer, power_pos = False, 0, None
 
-    # Generate obstacles
-    obstacles = []
-    while len(obstacles) < 15:
-        o = [random.randint(1, height-2), random.randint(1, width-2)]
-        if o not in snake and all(o not in a for a in ai_snakes) and o not in obstacles:
-            obstacles.append(o)
+    # Obstacles
+    obstacles = [random_pos(height, width, [snake, *ai_snakes]) for _ in range(15)]
 
-    # ---------------- Food & Power-up ---------------- #
     def create_food():
-        while True:
-            nf = [random.randint(1, height-2), random.randint(1, width-2)]
-            if nf not in snake and all(nf not in a for a in ai_snakes) and nf not in obstacles:
-                r = random.random()
-                if r < 0.7: return nf, 'normal'
-                elif r < 0.9: return nf, 'bonus'
-                else: return nf, 'poison'
+        pos = random_pos(height, width, [snake, *ai_snakes, obstacles])
+        r = random.random()
+        if r < 0.7: return pos, 'normal'
+        elif r < 0.9: return pos, 'bonus'
+        return pos, 'poison'
 
     def create_powerup():
-        while True:
-            pu = [random.randint(1, height-2), random.randint(1, width-2)]
-            if pu not in snake and all(pu not in a for a in ai_snakes) and pu not in obstacles:
-                return pu
+        return random_pos(height, width, [snake, *ai_snakes, obstacles])
 
     food, food_type = create_food()
     food_chars = {'normal': curses.ACS_PI, 'bonus': curses.ACS_DIAMOND, 'poison': curses.ACS_CKBOARD}
     food_colors = {'normal': 2, 'bonus': 3, 'poison': 4}
-    power_up_pos = None
 
-    # ---------------- AI Snake Logic ---------------- #
     def move_ai_snake(ai_snake):
         head = ai_snake[0][:]
-        # Simple chasing AI
-        if head[0] < food[0]: head[0] += 1
-        elif head[0] > food[0]: head[0] -= 1
-        if head[1] < food[1]: head[1] += 1
-        elif head[1] > food[1]: head[1] -= 1
+        head[0] += (food[0] > head[0]) - (food[0] < head[0])
+        head[1] += (food[1] > head[1]) - (food[1] < head[1])
         ai_snake.insert(0, head)
-        tail = ai_snake.pop()
-        win.addch(tail[0], tail[1], ' ')
-        win.addch(head[0], head[1], curses.ACS_CKBOARD, curses.color_pair(7))
+        win.addch(*ai_snake.pop(), ' ')
+        win.addch(*head, curses.ACS_CKBOARD, curses.color_pair(7))
 
-    # ---------------- Main Game Loop ---------------- #
     while True:
         win.clear()
         win.border()
-        win.addstr(0, 2, f"Score:{score} Level:{level}", curses.color_pair(5))
+        win.addstr(0, 2, f"Score:{score}  Level:{level}", curses.color_pair(5))
         win.addstr(0, 30, f"High Score:{high_score}", curses.color_pair(5))
-        if power_up: win.addstr(0, 50, "SHIELD ON", curses.color_pair(8))
+        if power_up: win.addstr(0, 52, "SHIELD", curses.color_pair(8))
 
-        # Draw obstacles
-        for o in obstacles:
-            win.addch(o[0], o[1], curses.ACS_CKBOARD, curses.color_pair(6))
+        # Draw everything
+        for o in obstacles: win.addch(*o, curses.ACS_CKBOARD, curses.color_pair(6))
+        for ai in ai_snakes:
+            for s in ai: win.addch(*s, curses.ACS_CKBOARD, curses.color_pair(7))
+        win.addch(*food, food_chars[food_type], curses.color_pair(food_colors[food_type]))
+        if power_pos: win.addch(*power_pos, curses.ACS_BULLET, curses.color_pair(8))
 
-        # Draw AI snakes
-        for a_snake in ai_snakes:
-            for segment in a_snake:
-                win.addch(segment[0], segment[1], curses.ACS_CKBOARD, curses.color_pair(7))
-
-        # Draw food
-        win.addch(food[0], food[1], food_chars[food_type], curses.color_pair(food_colors[food_type]))
-
-        # Draw power-up
-        if power_up_pos:
-            win.addch(power_up_pos[0], power_up_pos[1], curses.ACS_BULLET, curses.color_pair(8))
-
-        # Input
-        next_key = win.getch()
-        if next_key in [ord('p'), ord('P')]:
+        nxt = win.getch()
+        if nxt in [ord('p'), ord('P')]:
             paused = not paused
+            win.addstr(height // 2, width // 2 - 4, "PAUSED" if paused else "      ")
             continue
-        key = key if next_key == -1 else next_key
         if paused: continue
+        key = key if nxt == -1 else nxt
 
-        # Move player snake
+        # Movement
         head = snake[0][:]
-        if key == curses.KEY_DOWN: head[0] += 1
-        elif key == curses.KEY_UP: head[0] -= 1
-        elif key == curses.KEY_LEFT: head[1] -= 1
-        elif key == curses.KEY_RIGHT: head[1] += 1
+        moves = {curses.KEY_UP: (-1, 0), curses.KEY_DOWN: (1, 0),
+                 curses.KEY_LEFT: (0, -1), curses.KEY_RIGHT: (0, 1)}
+        if key in moves:
+            head[0] += moves[key][0]
+            head[1] += moves[key][1]
 
-        # Collision detection
-        dead = head in snake or head in obstacles or any(head in a for a in ai_snakes) \
-               or head[0] == 0 or head[0] == height-1 or head[1] == 0 or head[1] == width-1
-        if dead and not power_up:
+        # Collisions
+        hits_border = head[0] in [0, height - 1] or head[1] in [0, width - 1]
+        hits_any = head in snake or head in obstacles or any(head in a for a in ai_snakes)
+        if (hits_border or hits_any) and not power_up:
             curses.endwin()
-            print(f"Game Over! Score:{score} Level:{level}")
+            print(f"\nGame Over!  Score: {score}  Level: {level}")
             if score > high_score:
                 save_high_score(score)
-                print("New High Score!")
+                print("🎉 New High Score!")
             break
 
         snake.insert(0, head)
 
-        # Food collision
+        # Food logic
         if head == food:
-            if food_type == 'normal': score += 1
-            elif food_type == 'bonus': score += 3
-            elif food_type == 'poison': score = max(0, score-1)
+            score += {'normal': 1, 'bonus': 3, 'poison': -1}.get(food_type, 0)
+            score = max(score, 0)
             level = score // 5 + 1
-            win.timeout(max(50, 150 - (level-1)*10))
+            win.timeout(max(50, 150 - (level - 1) * 10))
             food, food_type = create_food()
             if random.random() < 0.2:
-                power_up_pos = create_powerup()
+                power_pos = create_powerup()
         else:
-            tail = snake.pop()
-            win.addch(tail[0], tail[1], ' ')
+            win.addch(*snake.pop(), ' ')
 
-        # Power-up collection
-        if power_up_pos and head == power_up_pos:
-            power_up = True
-            power_timer = 30  # lasts 30 moves
-            power_up_pos = None
-
-        # Decrease power-up timer
+        # Power-up
+        if power_pos and head == power_pos:
+            power_up, power_timer, power_pos = True, 30, None
         if power_up:
             power_timer -= 1
             if power_timer <= 0:
                 power_up = False
 
-        # Move AI snakes
-        for a_snake in ai_snakes:
-            move_ai_snake(a_snake)
-
-        # Draw player snake
-        win.addch(head[0], head[1], curses.ACS_CKBOARD, curses.color_pair(1))
-
+        # AI
+        for ai in ai_snakes: move_ai_snake(ai)
+        win.addch(*head, curses.ACS_CKBOARD, curses.color_pair(1))
 
 if __name__ == "__main__":
     snake_game()
